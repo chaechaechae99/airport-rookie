@@ -20,7 +20,8 @@ PANEL = "#26314a"
 TEXT = "#eef2ff"
 GOLD = "#ffd166"
 
-TOOL_ICON = {"road": "road5", "runway": "runway_h_w", "hangar": "hangar", "gate": "gate_n",
+TOOL_ICON = {"road": "road5", "runway": "runway_h_w", "hangar_light": "hangar_light", "hangar": "hangar",
+             "hangar_jumbo": "hangar_jumbo", "gate": "gate_n",
              "zone_terminal": "terminal2_0", "zone_shop": "shop2_0", "zone_parking": "parking2", "tower": "tower",
              "land": "tree0", "demolish": "construction"}
 DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
@@ -388,7 +389,7 @@ class App:
         # 설치 안내: 격납고/탑승동은 활주로 옆 칸이 빛난다
         self.canvas.delete("guide")
         tool = self.tool.get()
-        if tool in ("hangar", "gate"):
+        if tool == "gate" or tool in config.HANGARS:
             for r in range(N):
                 for c in range(N):
                     if s.can_build_here(r, c, tool):
@@ -444,25 +445,28 @@ class App:
         return (along, route[lane]) if route["horiz"] else (route[lane], along)
 
     def sync_fleet(self):
-        hangars = self.state.cells("hangar")
+        """엔진의 종류별 보유 대수와 화면의 비행기를 맞춘다 (비행기는 크기에 맞는 격납고에)"""
+        s = self.state
+        hangars = [(r, c, kind) for kind in config.HANGARS for r, c in s.cells(kind)]
+        cells = {(r, c) for r, c, _ in hangars}
         for p in self.fleet[:]:
-            if p["hangar"] not in hangars and p["state"] != "away":
+            if p["hangar"] not in cells and p["state"] != "away":
                 self.remove_plane(p)
-        for kind in config.PLANE_TYPES:
+        for kind in ("jumbo", "mid", "light"):
             mine = [p for p in self.fleet if p["type"] == kind]
-            while len(mine) > self.state.fleet[kind]:
+            while len(mine) > s.fleet[kind]:
                 self.remove_plane(mine.pop())
             used = {p["hangar"] for p in self.fleet}
-            for h in hangars:
-                if len(mine) >= self.state.fleet[kind]:
+            free = sorted((config.PLANE_SIZE[config.HANGARS[hk]], (r, c), hk) for r, c, hk in hangars
+                          if (r, c) not in used and config.PLANE_SIZE[config.HANGARS[hk]] >= config.PLANE_SIZE[kind])
+            for _, cell, hk in free:
+                if len(mine) >= s.fleet[kind]:
                     break
-                if h not in used:
-                    used.add(h)
-                    p = {"type": kind, "hangar": h, "livery": random.choice(sprites.LIVERIES), "state": "parked",
-                         "wait": random.uniform(1, 4), "segs": [], "t": 0, "dir": "e",
-                         "x": 0, "y": 0, "alt": 0, "items": None}
-                    self.fleet.append(p)
-                    mine.append(p)
+                p = {"type": kind, "hangar": cell, "hangar_kind": hk, "livery": random.choice(sprites.LIVERIES),
+                     "state": "parked", "wait": random.uniform(1, 4), "segs": [], "t": 0, "dir": "e",
+                     "x": 0, "y": 0, "alt": 0, "items": None}
+                self.fleet.append(p)
+                mine.append(p)
 
     def remove_plane(self, p):
         if p["items"]:
@@ -522,7 +526,8 @@ class App:
             if p["state"] in ("parked", "away"):
                 if p["state"] == "parked":
                     r, c = p["hangar"]
-                    self.canvas.create_image(c * T, (r + 1) * T, anchor="sw", image=imgs["hangar_closed"], tags="parked")
+                    self.canvas.create_image(c * T, (r + 1) * T, anchor="sw", image=imgs[p["hangar_kind"] + "_closed"],
+                                             tags="parked")
                 self.hide_plane(p)
                 p["wait"] -= dt
                 if p["wait"] > 0:

@@ -569,35 +569,44 @@ def _gate(side):
     return p.rows()
 
 
-def _hangar(open_):
-    p = Pix(32, 46)
-    base = 42
+def _hangar(open_, size=1):
+    """격납고. size 0 = 소형(경비행기), 1 = 중형(여객기), 2 = 대형(대형 여객기)"""
+    arch, height, door_x, (roof, roof_d, roof_h) = [
+        (6, 38, 9, ("7", "H", "w")),
+        (10, 46, 4, ("q", "Q", "v")),
+        (14, 56, 2, ("m", "M", "z")),
+    ][size]
+    p = Pix(32, height)
+    base = height - 4
+    top_wall = 6 + arch
     p.rect(0, base, 32, 4, "c")
-    for x in range(1, 31):                      # 둥근 지붕
+    for x in range(1, 31):                      # 둥근 지붕 (클수록 높다)
         t = (x - 15.5) / 15
-        top = round(3 + 10 * (1 - math.sqrt(max(0, 1 - t * t))))
-        p.rect(x, top, 1, 16 - top, "q")
-        p.px(x, top, "v")
+        top = round(3 + arch * (1 - math.sqrt(max(0, 1 - t * t))))
+        p.rect(x, top, 1, top_wall - top, roof)
+        p.px(x, top, roof_h)
         p.px(x, top - 1, "k")
         if x % 4 == 0:
-            p.rect(x, top + 1, 1, 15 - top, "Q")
-    p.rect(1, 16, 30, base - 16, "W")          # 벽
-    p.rect(27, 16, 4, base - 16, "X")
-    p.rect(0, 15, 32, 1, "k")
-    p.rect(0, 15, 1, base - 14, "k")
-    p.rect(31, 15, 1, base - 14, "k")
+            p.rect(x, top + 1, 1, top_wall - 1 - top, roof_d)
+    p.rect(1, top_wall, 30, base - top_wall, "W")          # 벽
+    p.rect(27, top_wall, 4, base - top_wall, "X")
+    p.rect(0, top_wall - 1, 32, 1, "k")
+    p.rect(0, top_wall - 1, 1, base - top_wall + 2, "k")
+    p.rect(31, top_wall - 1, 1, base - top_wall + 2, "k")
     p.rect(0, base - 1, 32, 1, "k")
-    p.rect(4, 19, 24, base - 20, "k")          # 큰 문
+    if size == 2:                               # 대형 격납고 빨간 띠
+        p.rect(1, top_wall, 30, 2, "r")
+    dw, dy = 32 - door_x * 2, top_wall + 3       # 문 (클수록 넓다)
+    p.rect(door_x, dy, dw, base - dy - 1, "k")
     if open_:
-        p.rect(5, 20, 22, base - 21, "A")
-        p.rect(5, 20, 22, 2, "B")
-        p.rect(13, 30, 6, 2, "X")               # 안쪽 비행기 코 끝
+        p.rect(door_x + 1, dy + 1, dw - 2, base - dy - 2, "A")
+        p.rect(door_x + 1, dy + 1, dw - 2, 2, "B")
     else:
-        p.rect(5, 20, 22, base - 21, "v")
-        for x in range(6, 27, 2):
-            p.rect(x, 20, 1, base - 21, "q")
-        p.rect(15, 20, 2, base - 21, "Q")
-    p.rect(6, 17, 20, 1, "l")                  # 노란 경고선
+        p.rect(door_x + 1, dy + 1, dw - 2, base - dy - 2, "v")
+        for x in range(door_x + 2, door_x + dw - 1, 2):
+            p.rect(x, dy + 1, 1, base - dy - 2, "q")
+        p.rect(15, dy + 1, 2, base - dy - 2, "Q")
+    p.rect(door_x + 2, top_wall + 1, dw - 4, 1, "l")       # 노란 경고선
     return p.rows()
 
 
@@ -737,7 +746,9 @@ SPRITES = {
     **{f"terminal{lv}_{v}": _terminal(lv, v) for lv in (1, 2, 3) for v in range(3)},
     **{f"shop{lv}_{v}": _shop(lv, v) for lv in (1, 2, 3) for v in range(3)},
     **{f"gate_{d}": _gate(d) for d in "nsew"},
-    "hangar": _hangar(True), "hangar_closed": _hangar(False),
+    "hangar_light": _hangar(True, 0), "hangar_light_closed": _hangar(False, 0),
+    "hangar": _hangar(True, 1), "hangar_closed": _hangar(False, 1),
+    "hangar_jumbo": _hangar(True, 2), "hangar_jumbo_closed": _hangar(False, 2),
     "tower": _tower(),
 }
 for _k in ("runway_h", "runway_h_w", "runway_h_e"):          # 세로 활주로 = 가로를 뒤집어서
@@ -779,8 +790,8 @@ def tile_layers(grid, levels, r, c):
             return "runway_h" + end, None
         end = "_n" if not same(r - 1, c) else "_s" if not same(r + 1, c) else ""
         return "runway_v" + end, None
-    if v == "hangar":
-        return "plaza", "hangar"
+    if v in ("hangar_light", "hangar", "hangar_jumbo"):
+        return "plaza", v
     if v == "gate":                               # 탑승교가 활주로 쪽을 향하게
         for side, (dr, dc) in (("n", (-1, 0)), ("s", (1, 0)), ("e", (0, 1)), ("w", (0, -1))):
             if 0 <= r + dr < n and 0 <= c + dc < n and grid[r + dr][c + dc] == "runway":

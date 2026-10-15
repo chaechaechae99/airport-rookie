@@ -235,6 +235,7 @@ async function startGame(difficulty) {
   tool = "move"; paused = false; speed = 1;
   fleet = []; cars = []; people = []; popups = []; jobs = []; staticKey = "";
   gateQueue.clear(); laneLock.clear(); gateBusy.clear(); spotTaken.clear();
+  gateArrivals.clear(); terminalWaiting = 0;
   $("log").textContent = "";
   $("start").classList.add("hidden");
   $("game").classList.remove("hidden");
@@ -309,7 +310,8 @@ function renderPanel() {
   }).join("");
 }
 
-const TOOL_ICON = { road: "road5", runway: "runway_h_w", hangar: "hangar", gate: "gate_n", zone_terminal: "terminal2_0",
+const TOOL_ICON = { road: "road5", runway: "runway_h_w", hangar_light: "hangar_light", hangar: "hangar",
+                    hangar_jumbo: "hangar_jumbo", gate: "gate_n", zone_terminal: "terminal2_0",
                     zone_shop: "shop2_0", zone_parking: "parking2", tower: "tower", land: "tree0", demolish: "construction" };
 
 function buildTools() {
@@ -405,7 +407,10 @@ function refreshMapInfo() {
     shops: all((v, r, c) => v === "zone_shop" && lv(r, c) > 0),
     parkings: all((v, r, c) => v === "zone_parking" && lv(r, c) > 0 && roadNext(r, c)).map(([r, c]) => ({ r, c, road: roadNext(r, c), spots: 4 * lv(r, c) })),
     terminalRoads: all((v, r, c) => v === "zone_terminal" && lv(r, c) > 0 && roadNext(r, c)).map(([r, c]) => ({ r, c, road: roadNext(r, c) })),
-    hangars: all(v => v === "hangar"),
+    hangars: all(v => v in game.hangar_kinds).map(([r, c]) => {
+      const kind = game.grid[r][c];
+      return { cell: [r, c], kind, size: SIZE[game.hangar_kinds[kind]] };
+    }),
     gates: all(v => v === "gate"),
     lights: all((v, r, c) => v === "road" && roadCount(r, c) >= 3),   // 삼거리 이상 = 신호등
   };
@@ -444,6 +449,14 @@ function redFor(car, p) {
   const vertical = Math.abs(dy) > Math.abs(dx);
   return yellow || (vertical ? phase !== 0 : phase !== 1);
 }
+function mustWait(car, dt) {
+  // 빨간불이나 앞차 때문에 멈춘다. 단, 너무 오래 막히면(엉킴 방지) 그냥 지나간다
+  const p = car.path[car.i];
+  const red = p && redFor(car, p), jam = blocked(car);
+  if (!red && !jam) { car.stuck = 0; return false; }
+  car.stuck = (car.stuck || 0) + dt;
+  return car.stuck < (red ? 7 : 3);
+}
 function blocked(car) {
   // 바로 앞에 같은 방향으로 가는 차가 있으면 기다린다
   const v = { e: [1, 0], w: [-1, 0], s: [0, 1], n: [0, -1] }[car.dir];
@@ -451,7 +464,7 @@ function blocked(car) {
     if (o === car || o.state === "parked" || o.dir !== car.dir) return false;
     const dx = o.x - car.x, dy = o.y - car.y;
     const ahead = dx * v[0] + dy * v[1], side = Math.abs(dx * v[1] - dy * v[0]);
-    return ahead > 0 && ahead < 15 && side < 6;
+    return ahead > 0 && ahead < (o.bus || car.bus ? 21 : 15) && side < 6;
   });
 }
 
@@ -484,12 +497,92 @@ const nearest = (list, x, y) => list.reduce((b, p) => {
 }, null)?.p;
 
 function toGate() {
-  // 터미널에 들어간 손님은 건물 안 통로로 탑승동까지 이동한다 (몇 초 뒤 탑승동 대기열에 나타남)
+  // 셔틀버스가 다니면 터미널에서 버스를 기다린다
+  if (cars.some(c => c.bus)) { terminalWaiting = Math.min(60, terminalWaiting + 1); return; }
+  // 버스가 없으면 건물 안 통로로 탑승동까지 이동한다 (몇 초 뒤 탑승동 대기열에 나타남)
   later(rand(3, 6), () => {
     if (!mapInfo.gates.length) return;
     const g = pick(mapInfo.gates).join(",");
     gateQueue.set(g, Math.min(12, (gateQueue.get(g) || 0) + 1));
   });
+}
+
+// ── 탑승동 셔틀버스: 터미널 앞 도로 ↔ 탑승동 근처 도로 ──
+let terminalWaiting = 0;              // 터미널에서 버스를 기다리는 출발 손님
+const gateArrivals = new Map();       // 탑승동 정류장에서 버스를 기다리는 도착 손님
+
+function roadBetween(a, b) {
+  // 도로 칸 a → b 경로 (입구 기준 길찾기 트리에서 만나는 지점을 거쳐 간다)
+  const chain = ([r, c]) => { const out = []; let cur = [r, c]; while (cur) { out.push(cur); cur = roadParent.get(key(cur[0], cur[1])); } return out; };
+  const A = chain(a), B = chain(b);
+  const inB = new Map(B.map((p, i) => [key(p[0], p[1]), i]));
+  const i = A.findIndex(p => inB.has(key(p[0], p[1])));
+  const j = inB.get(key(A[i][0], A[i][1]));
+  return [...A.slice(0, i + 1), ...B.slice(0, j).reverse()].map(([r, c]) => center(r, c));
+}
+
+function busStops(g) {
+  // 탑승동 바로 옆 도로 = 탑승동 정류장, 거기서 가장 가까운 터미널 앞 도로 = 터미널 정류장
+  let best = null;
+  for (const k of roadParent.keys()) {
+    const r = Math.floor(k / 1000), c = k % 1000, d = Math.abs(r - g[0]) + Math.abs(c - g[1]);
+    if (!best || d < best.d) best = { r, c, d };
+  }
+  if (!best || best.d > 1 || !mapInfo.terminalRoads.length) return null;   // 도로가 탑승동에 붙어 있어야 버스가 다님
+  const term = mapInfo.terminalRoads.reduce((b, t) => {
+    const d = Math.abs(t.road[0] - best.r) + Math.abs(t.road[1] - best.c);
+    return !b || d < b.d ? { t, d } : b;
+  }, null).t;
+  return { gateStop: [best.r, best.c], term };
+}
+
+function ensureBuses() {
+  // 탑승동마다 버스 한 대씩 자동 운행
+  for (const g of mapInfo.gates) {
+    const gk = g.join(",");
+    if (cars.some(c => c.bus && c.gate === gk)) continue;
+    const st = busStops(g);
+    if (!st) continue;
+    const path = roadPath(st.term.road[0], st.term.road[1]);
+    cars.push({ ...path[0], path, i: 0, color: "#1e88e5", bus: true, gate: gk, g, dir: "n", state: "toTerm", load: 0, wait: 0 });
+  }
+  for (const b of cars) if (b.bus && !mapInfo.gates.some(g => g.join(",") === b.gate)) b.done = true;
+}
+
+function updateBus(b, dt) {
+  if (b.wait > 0) {                                    // 정류장에서 손님 타고 내리는 중
+    b.wait -= dt;
+    if (b.wait > 0) return;
+    const st = busStops(b.g);
+    if (!st) { b.done = true; return; }
+    b.path = b.state === "atTerm" ? roadBetween(st.term.road, st.gateStop) : roadBetween(st.gateStop, st.term.road);
+    b.i = 0;
+    b.state = b.state === "atTerm" ? "toGate" : "toTerm";
+    return;
+  }
+  if (mustWait(b, dt)) return;
+  if (!moveAlong(b, dt, 55)) return;
+  const st = busStops(b.g);
+  if (!st) { b.done = true; return; }
+  if (b.state === "toTerm") {
+    // 도착 손님 내림 → 터미널로 걸어가서 자기 차/택시
+    const d = doorOf([st.term.r, st.term.c]);
+    for (let k = 0; k < b.load; k++) later(k * .3, () => spawnPerson(b.x + rand(-6, 6), b.y, d.x, d.y, arrivedPassenger));
+    if (b.load) popups.push({ x: b.x, y: b.y - 16, text: `하차 ${b.load}명`, t: 0, plain: true });
+    // 출발 손님 태움
+    b.load = Math.min(terminalWaiting, 10);
+    terminalWaiting -= b.load;
+    if (b.load) popups.push({ x: b.x, y: b.y - 28, text: `버스 탑승 ${b.load}명`, t: 0, plain: true });
+    b.state = "atTerm"; b.wait = 2.5;
+  } else if (b.state === "toGate") {
+    // 출발 손님 내림 → 탑승동으로 걸어가서 대기
+    const d = doorOf(b.g);
+    for (let k = 0; k < b.load; k++)
+      later(k * .3, () => spawnPerson(b.x + rand(-6, 6), b.y, d.x, d.y, () => gateQueue.set(b.gate, Math.min(12, (gateQueue.get(b.gate) || 0) + 1))));
+    b.load = gateArrivals.get(b.gate) || 0;             // 도착 손님 태움
+    gateArrivals.set(b.gate, 0);
+    b.state = "atGate"; b.wait = 2.5;
+  }
 }
 
 function spawnCar() {
@@ -540,12 +633,13 @@ function arrivedPassenger() {
       car.returning = true;
       const d = doorOf(t);
       spawnPerson(d.x, d.y, car.x, car.y + 4, () => { car.state = "unpark"; car.path = [center(car.pk.road[0], car.pk.road[1])]; car.i = 0; });
-    } else if (mapInfo.terminalRoads.length) callTaxi(pick(mapInfo.terminalRoads));
+    } else if (mapInfo.terminalRoads.length && cars.length < 10 + game.effective_planes * 4) callTaxi(pick(mapInfo.terminalRoads));
   });
 }
 
 function updateCars(dt) {
   for (const car of cars) {
+    if (car.bus) { updateBus(car, dt); continue; }
     if (car.state === "parked") {
       car.wait -= dt;
       if (car.wait <= 0 && !car.returning && mapInfo.terminals.length) {   // 너무 오래 서 있으면 주인이 돌아온다
@@ -555,8 +649,7 @@ function updateCars(dt) {
       }
       continue;
     }
-    const nextP = car.path[car.i];
-    if (nextP && (redFor(car, nextP) || blocked(car))) continue;   // 빨간불 / 앞차
+    if (mustWait(car, dt)) continue;   // 빨간불 / 앞차
     if (!moveAlong(car, dt, 70)) continue;
     if (car.state === "toPark") {
       car.state = "parked"; car.dir = car.spot < 4 ? "n" : "s";
@@ -594,6 +687,7 @@ function updatePeople(dt) {
 let fleet = [], cruises = [], cruiseTimer = 4;
 const LIVERIES = ["sky", "rainbow", "red"];
 const SEATS = { light: 2, mid: 4, jumbo: 8 };
+const SIZE = { light: 0, mid: 1, jumbo: 2 };   // 비행기 크기 (격납고도 같은 기준)
 const laneLock = new Map();   // "활주로:차선" → 사용 중인 비행기 (한 차선에 한 대만)
 const gateBusy = new Map();   // 탑승동 → 붙어 있는 비행기 (탑승동 하나에 한 대만)
 
@@ -630,18 +724,20 @@ const P = (route, along, lane) => route.horiz ? { x: along, y: route[lane] } : {
 const seg = (from, to, dur, ease = "lin", alt0 = 0, alt1 = 0, onEnd = null) => ({ from, to, dur: Math.max(.05, dur), ease, alt0, alt1, onEnd });
 
 function syncFleet() {
-  // 서버의 종류별 보유 대수/격납고와 화면의 비행기를 맞춘다
-  const hangarKeys = new Set(mapInfo.hangars.map(h => h.join(",")));
-  fleet = fleet.filter(p => hangarKeys.has(p.hangar.join(",")) || p.state === "away");
-  for (const type of ["light", "mid", "jumbo"]) {
-    let mine = fleet.filter(p => p.type === type);
-    while (mine.length > game.fleet[type]) { fleet.splice(fleet.indexOf(mine.pop()), 1); }
+  // 서버의 종류별 보유 대수/격납고와 화면의 비행기를 맞춘다 (비행기는 크기에 맞는 격납고에)
+  const hs = mapInfo.hangars;
+  const exists = new Set(hs.map(h => h.cell.join(",")));
+  fleet = fleet.filter(p => exists.has(p.hangar.join(",")) || p.state === "away");
+  for (const type of ["jumbo", "mid", "light"]) {
+    const mine = fleet.filter(p => p.type === type);
+    while (mine.length > game.fleet[type]) fleet.splice(fleet.indexOf(mine.pop()), 1);
     const used = new Set(fleet.map(p => p.hangar.join(",")));
     while (mine.length < game.fleet[type]) {
-      const h = mapInfo.hangars.find(x => !used.has(x.join(",")));
+      const h = hs.filter(x => !used.has(x.cell.join(",")) && x.size >= SIZE[type]).sort((a, b) => a.size - b.size)[0];
       if (!h) break;
-      used.add(h.join(","));
-      const p = { type, hangar: h, livery: pick(LIVERIES), state: "parked", wait: rand(1, 4), segs: [], t: 0, dir: "e", x: 0, y: 0, alt: 0 };
+      used.add(h.cell.join(","));
+      const p = { type, hangar: h.cell, hangarKind: h.kind, livery: pick(LIVERIES), state: "parked",
+                  wait: rand(1, 4), segs: [], t: 0, dir: "e", x: 0, y: 0, alt: 0 };
       fleet.push(p); mine.push(p);
     }
   }
@@ -655,10 +751,16 @@ function board(p, gateCell) {
   if (n) popups.push({ x: p.x, y: p.y - 20, text: `탑승 ${n}명`, t: 0, plain: true });
 }
 
-function deboard(p) {
-  const n = SEATS[p.type];
+function deboard(p, gateCell) {
+  const n = SEATS[p.type], gk = gateCell.join(",");
   popups.push({ x: p.x, y: p.y - 20, text: `도착 ${n}명`, t: 0, plain: true });
-  for (let k = 0; k < Math.ceil(n / 2); k++) arrivedPassenger();
+  const st = cars.some(c => c.bus && c.gate === gk) && busStops(gateCell);
+  for (let k = 0; k < Math.ceil(n / 2); k++) {
+    if (!st) { arrivedPassenger(); continue; }
+    const d = doorOf(gateCell), stop = center(...st.gateStop);
+    later(1 + k * .4, () => spawnPerson(d.x, d.y, stop.x + rand(-8, 8), stop.y + rand(-4, 4),
+                                         () => gateArrivals.set(gk, (gateArrivals.get(gk) || 0) + 1)));
+  }
 }
 
 function takeoff(p, route) {
@@ -688,7 +790,7 @@ function landing(p, route) {
   gateBusy.set(gk, p);
   p.segs = [
     seg(far, td, 4, "lin", 160, 0),
-    seg(td, atGate, Math.max(1.2, Math.sqrt(Math.abs(route.end - route.gate.stop) / 30)), "out", 0, 0, () => deboard(p)),
+    seg(td, atGate, Math.max(1.2, Math.sqrt(Math.abs(route.end - route.gate.stop) / 30)), "out", 0, 0, () => deboard(p, route.gate.cell)),
     seg(atGate, atGate, 2.2, "lin", 0, 0, () => gateBusy.delete(gk)),   // 하차
     seg(atGate, back, Math.abs(route.gate.stop - route.stop) / 45 + .2, "lin", 0, 0, () => laneLock.delete(lock)),
     seg(back, route.H, 1.6),
@@ -762,8 +864,11 @@ function updateCruises(dt) {
 // ════════════════════════════════════════════
 //  업데이트 / 그리기
 // ════════════════════════════════════════════
+let busTimer = 0;
 function update(dt) {
   clock += dt;
+  busTimer -= dt;
+  if (busTimer <= 0) { busTimer = 1; ensureBuses(); }
   for (const j of jobs) { j.t -= dt; if (j.t <= 0) { j.done = true; j.fn(); } }
   jobs = jobs.filter(j => !j.done);
   updateFleet(dt);
@@ -822,7 +927,8 @@ function drawCentered(k, x, y, alpha = 1) {
 
 function drawCar(car) {
   const vert = car.dir === "n" || car.dir === "s";
-  const w = vert ? 8 : 12, h = vert ? 12 : 8;
+  const len = car.bus ? 18 : 12, wid = car.bus ? 9 : 8;
+  const w = vert ? wid : len, h = vert ? len : wid;
   // 오른쪽 차선으로 달리기
   const off = car.state === "parked" ? [0, 0] : { e: [0, 5], w: [0, -5], n: [5, 0], s: [-5, 0] }[car.dir];
   const x = Math.round(car.x + off[0] - w / 2), y = Math.round(car.y + off[1] - h / 2);
@@ -835,6 +941,15 @@ function drawCar(car) {
   ctx.fillStyle = "rgba(255,255,255,.35)";
   ctx.fillRect(x + 1, y + 1, w - 2, 1);
   if (car.taxi) { ctx.fillStyle = "#2b2633"; ctx.fillRect(x + w / 2 - 2, y + h / 2 - 1, 4, 2); }   // 택시 표시등
+  if (car.bus) {                                                   // 버스 옆 창문 줄 + 흰 띠
+    ctx.fillStyle = night() ? "#ffe9a8" : "#bfe6ff";
+    for (let k = 4; k < len - 4; k += 3) {
+      if (vert) { ctx.fillRect(x + 1, y + k, 1, 2); ctx.fillRect(x + w - 2, y + k, 1, 2); }
+      else { ctx.fillRect(x + k, y + 1, 2, 1); ctx.fillRect(x + k, y + h - 2, 2, 1); }
+    }
+    ctx.fillStyle = "#ffffff";
+    if (vert) ctx.fillRect(x + w / 2 - 1, y + 3, 2, h - 6); else ctx.fillRect(x + 3, y + h / 2 - 1, w - 6, 2);
+  }
 }
 
 function drawPerson(p, standing = false) {
@@ -889,7 +1004,7 @@ function draw(now) {
   // 설치 안내: 반짝이는 칸
   const pulse = .35 + .25 * Math.sin(now / 180);
   let hint = "", warn = false;
-  if (tool === "hangar" || tool === "gate") {
+  if (game.build_ok[tool]) {
     const ok = game.build_ok[tool];
     for (const [r, c] of ok) {
       ctx.fillStyle = `rgba(255, 214, 90, ${pulse})`;
@@ -897,8 +1012,9 @@ function draw(now) {
       ctx.strokeStyle = "#ffd166"; ctx.lineWidth = 2;
       ctx.strokeRect(c * T + 2, r * T + 2, T - 4, T - 4);
     }
-    const name = tool === "hangar" ? "격납고" : "탑승동";
-    hint = ok.length ? `✨ 반짝이는 칸에 ${name}을 설치하세요 (활주로 옆)` : `${name}은 활주로 옆에만 지을 수 있어요. 활주로부터 깔아주세요!`;
+    const name = game.tools.find(t => t.key === tool).name;
+    const fits = { hangar_light: " · 경비행기용", hangar: " · 경비행기/여객기용", hangar_jumbo: " · 모든 비행기 (대형 여객기는 여기만)" }[tool] || "";
+    hint = ok.length ? `✨ 반짝이는 칸에 ${name}을 설치하세요 (활주로 옆)${fits}` : `${name}은 활주로 옆에만 지을 수 있어요. 활주로부터 깔아주세요!`;
   } else if (tool.startsWith("zone_")) {
     for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
       if (game.grid[r][c] !== "empty") continue;
@@ -936,7 +1052,7 @@ function draw(now) {
   }
 
   // 격납고에 들어가 있는 비행기 → 문 닫힌 격납고
-  for (const p of fleet) if (p.state === "parked") drawObject(ctx, "hangar_closed", p.hangar[0], p.hangar[1]);
+  for (const p of fleet) if (p.state === "parked") drawObject(ctx, `${p.hangarKind}_closed`, p.hangar[0], p.hangar[1]);
 
   // 탑승동 앞에서 기다리는 손님
   for (const [g, n] of gateQueue) {
@@ -944,6 +1060,18 @@ function draw(now) {
     for (let i = 0; i < Math.min(n, 6); i++) {
       const [color, hair] = QUEUE_LOOKS[i];
       drawPerson({ x: c * T + 5 + i * 4.5, y: r * T + T - 1, color, hair, dir: "s", walk: 0, bag: false }, true);
+    }
+  }
+
+  // 탑승동 정류장에서 버스를 기다리는 손님
+  for (const [gk, n] of gateArrivals) {
+    if (!n) continue;
+    const st = busStops(gk.split(",").map(Number));
+    if (!st) continue;
+    const s0 = center(...st.gateStop);
+    for (let i = 0; i < Math.min(n, 5); i++) {
+      const [color, hair] = QUEUE_LOOKS[i];
+      drawPerson({ x: s0.x - 10 + i * 5, y: s0.y + 13, color, hair, dir: "s", walk: 0, bag: true }, true);
     }
   }
 
@@ -987,8 +1115,7 @@ function draw(now) {
   if (hoverCell) {
     const [r, c] = hoverCell;
     if (game.grid[r][c] === "empty" && game.tools.some(t => t.key === tool)) {
-      const prev = { road: "road5", runway: "runway_h", hangar: "hangar", gate: "gate_n", tower: "tower",
-                     zone_terminal: tool, zone_shop: tool, zone_parking: tool }[tool];
+      const prev = { road: "road5", runway: "runway_h", gate: "gate_n" }[tool] || tool;
       if (SP.sprites[prev].length > T) drawObject(ctx, prev, r, c, .7);
       else { ctx.globalAlpha = .7; ctx.drawImage(spr(prev), c * T, r * T); ctx.globalAlpha = 1; }
     }
@@ -1112,7 +1239,8 @@ function describe([r, c]) {
     const building = game.building.some(([br, bc]) => br === r && bc === c);
     const noRoad = game.no_road.some(([br, bc]) => br === r && bc === c);
     text = `${info ? info.name : v} · ` + (noRoad ? "⚠ 도로 연결 필요!" : lv <= 0 ? (building ? "공사 중..." : "수요 대기 중") : `Lv${lv}` + (building ? " (확장 공사 중)" : ""));
-  } else if (v === "gate") text = `탑승동 · 대기 손님 ${gateQueue.get(`${r},${c}`) || 0}명`;
+  } else if (v === "gate") text = `탑승동 · 대기 손님 ${gateQueue.get(`${r},${c}`) || 0}명 · ` +
+      (busStops([r, c]) ? "🚌 셔틀버스 운행 중" : "도로를 탑승동 옆까지 이어주면 셔틀버스가 다녀요");
   else text = info ? info.name : v;
   $("hover").textContent = text;
 

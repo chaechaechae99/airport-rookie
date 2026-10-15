@@ -16,6 +16,12 @@ def money_text(v):
     return f"{int(v):,} {config.CURRENCY}"
 
 
+def topic(word):
+    """받침에 맞춰 '은/는' 붙이기 (예: 격납고는, 여객기는, 탑승동은)"""
+    code = ord(word[-1]) - 0xAC00
+    return word + ("은" if 0 <= code < 11172 and code % 28 else "는")
+
+
 class GameState:
     def __init__(self, difficulty, save):
         d = config.DIFFICULTY[difficulty]
@@ -161,6 +167,33 @@ class GameState:
         ok = self.valid_runway_cells()
         return sum(1 for r, c in self.cells(value) if any((r + dr, c + dc) in ok for dr, dc in DIRS))
 
+    def hangar_caps(self, valid_only=True):
+        """크기별 격납고 수 [소형, 중형, 대형] (valid_only: 제대로 된 활주로 옆에 있는 것만)"""
+        ok = self.valid_runway_cells() if valid_only else None
+        caps = [0, 0, 0]
+        for kind, plane in config.HANGARS.items():
+            for r, c in self.cells(kind):
+                if ok is None or any((r + dr, c + dc) in ok for dr, dc in DIRS):
+                    caps[config.PLANE_SIZE[plane]] += 1
+        return caps
+
+    @staticmethod
+    def park(fleet, caps):
+        """비행기를 격납고에 배정 (큰 비행기부터, 맞는 것 중 가장 작은 격납고에) → 종류별 배정 대수"""
+        caps = list(caps)
+        out = {}
+        for kind in ("jumbo", "mid", "light"):
+            placed = 0
+            for size in range(config.PLANE_SIZE[kind], 3):
+                take = min(fleet[kind] - placed, caps[size])
+                caps[size] -= take
+                placed += take
+            out[kind] = placed
+        return out
+
+    def all_parked(self, fleet, caps):
+        return self.park(fleet, caps) == {k: fleet[k] for k in ("jumbo", "mid", "light")}
+
     def terminal_capacity(self):
         """여객 터미널이 감당하는 손님 수 (load)"""
         return self.zone_level_sum("terminal") * config.TERMINAL_LOAD_PER_LV
@@ -169,8 +202,7 @@ class GameState:
         """활주로/격납고/탑승동 기준으로 동시에 띄울 수 있는 비행기 수"""
         strips = self.valid_strips()
         runway_cap = sum(self.strip_len(st) for st in strips)
-        return min(self.beside_valid_runway("hangar"), runway_cap,
-                   self.beside_valid_runway("gate") * config.PLANES_PER_GATE)
+        return min(runway_cap, self.beside_valid_runway("gate") * config.PLANES_PER_GATE)
 
     def operating(self, limit_terminal=True):
         """종류별로 실제 운항 중인 비행기 수 (큰 비행기부터 배정)"""
@@ -178,12 +210,13 @@ class GameState:
         load_left = self.terminal_capacity() if limit_terminal else 10 ** 9
         long_ok = any(self.strip_len(st) >= max(config.JUMBO_RUNWAY_LEN, self.mods["runway_min_len"])
                       for st in self.valid_strips())
+        parked = self.park(self.fleet, self.hangar_caps())     # 활주로 옆 격납고에 들어간 비행기만
         out = {k: 0 for k in config.PLANE_TYPES}
         for kind in ("jumbo", "mid", "light"):
             if kind == "jumbo" and not long_ok:
                 continue
             load = config.PLANE_TYPES[kind]["load"]
-            for _ in range(self.fleet[kind]):
+            for _ in range(parked[kind]):
                 if slots <= 0 or load_left < load:
                     break
                 out[kind] += 1
@@ -218,7 +251,7 @@ class GameState:
         return income + shops * config.SHOP_INCOME
 
     def monthly_upkeep(self):
-        structures = sum(1 for row in self.grid for v in row if v in ("hangar", "gate", "tower"))
+        structures = sum(1 for row in self.grid for v in row if v in ("gate", "tower") or v in config.HANGARS)
         buildings = sum(max(0, lv) for row in self.levels for lv in row)
         planes = sum(n * config.PLANE_TYPES[k]["upkeep"] for k, n in self.fleet.items())
         return planes * self.mods["upkeep_mult"] + (structures + buildings) * config.BUILDING_UPKEEP
@@ -285,7 +318,7 @@ class GameState:
         """설치 가능한 칸인지 (화면에서 '여기에 설치하세요' 표시용)"""
         if self.grid[r][c] != "empty":
             return False
-        if zone in ("hangar", "gate"):
+        if zone == "gate" or zone in config.HANGARS:
             return self.is_next_to(r, c, "runway")
         if zone == "zone_terminal" and self.mods["noise"]:
             return not self.is_next_to(r, c, "runway")
@@ -301,8 +334,8 @@ class GameState:
             return False, "이미 무언가 있습니다. 먼저 철거하세요."
         if zone not in self.unlocked:
             return False, "아직 해금되지 않은 시설입니다."
-        if zone in ("hangar", "gate") and not self.is_next_to(r, c, "runway"):
-            return False, f"{config.ZONES[zone]['name']}은(는) 활주로 바로 옆에만 지을 수 있습니다."
+        if (zone == "gate" or zone in config.HANGARS) and not self.is_next_to(r, c, "runway"):
+            return False, f"{topic(config.ZONES[zone]['name'])} 활주로 바로 옆에만 지을 수 있습니다."
         if zone == "zone_terminal" and self.mods["noise"] and self.is_next_to(r, c, "runway"):
             return False, "소음 규제: 활주로 옆에는 터미널 구역을 정할 수 없습니다."
         cost = self.build_cost(zone)
@@ -322,8 +355,11 @@ class GameState:
             return False, ""
         if (r, c) == ENTRANCE:
             return False, "공항 입구 도로는 철거할 수 없습니다."
-        if cell == "hangar" and self.planes > self.count("hangar") - 1:
-            return False, "비행기를 세워둘 격납고가 모자라게 됩니다."
+        if cell in config.HANGARS:
+            caps = self.hangar_caps(valid_only=False)
+            caps[config.PLANE_SIZE[config.HANGARS[cell]]] -= 1
+            if not self.all_parked(self.fleet, caps):
+                return False, "비행기를 세워둘 격납고가 모자라게 됩니다."
         self.grid[r][c] = "empty"
         self.levels[r][c] = 0
         self.timers[r][c] = 0
@@ -338,9 +374,12 @@ class GameState:
         if not info:
             return False, "없는 비행기 종류입니다."
         if not self.plane_unlocked(kind):
-            return False, f"{info['name']}은(는) {info['unlock_month'] // 12 + 1}년 차부터 살 수 있습니다."
-        if self.planes >= self.count("hangar"):
-            return False, "격납고가 부족합니다. 격납고 1칸에 비행기 1대!"
+            return False, f"{topic(info['name'])} {info['unlock_month'] // 12 + 1}년 차부터 살 수 있습니다."
+        new = dict(self.fleet, **{kind: self.fleet[kind] + 1})
+        if not self.all_parked(new, self.hangar_caps(valid_only=False)):
+            fits = [config.ZONES[h]["name"] for h, p in config.HANGARS.items()
+                    if config.PLANE_SIZE[p] >= config.PLANE_SIZE[kind]]
+            return False, f"빈 격납고가 없습니다. {topic(info['name'])} {'/'.join(fits)}에 들어가요."
         if self.money < info["price"]:
             return False, f"자금이 부족합니다. ({info['name']} {money_text(info['price'])})"
         self.money -= info["price"]
@@ -471,7 +510,7 @@ class GameState:
         """비행기가 안 뜨는 이유 (화면 안내용)"""
         if not self.valid_strips():
             return f"활주로를 한 줄로 {self.mods['runway_min_len']}칸 이상 이어서 깔아주세요"
-        if self.beside_valid_runway("hangar") == 0:
+        if sum(self.hangar_caps()) == 0:
             return "활주로 옆에 격납고를 지어주세요"
         if self.beside_valid_runway("gate") == 0:
             return "활주로 옆에 탑승동을 지어주세요 (손님이 비행기를 타는 곳)"
@@ -525,7 +564,8 @@ class GameState:
                 for z in self.unlocked
             ],
             "build_ok": {z: [[r, c] for r in range(N) for c in range(N) if self.can_build_here(r, c, z)]
-                         for z in ("hangar", "gate")},
+                         for z in ("gate", *config.HANGARS)},
+            "hangar_kinds": config.HANGARS,
             "finished": self.finished,
             "ending": self.ending_text() if self.finished else None,
         }

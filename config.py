@@ -22,14 +22,19 @@ TILE_PX = 32
 ZONES = {
     "road":          {"name": "도로",      "kind": "build", "color": "#5c5f6b", "cost": 10},
     "runway":        {"name": "활주로",    "kind": "build", "color": "#4a4d58", "cost": 30},
-    "hangar":        {"name": "격납고",    "kind": "build", "color": "#a9b8c9", "cost": 80},    # 활주로 옆에만
+    "hangar_light":  {"name": "소형 격납고", "kind": "build", "color": "#a5e4d9", "cost": 50},   # 활주로 옆에만
+    "hangar":        {"name": "중형 격납고", "kind": "build", "color": "#a9b8c9", "cost": 80},
+    "hangar_jumbo":  {"name": "대형 격납고", "kind": "build", "color": "#5b8def", "cost": 250},
     "gate":          {"name": "탑승동",    "kind": "build", "color": "#d7dde5", "cost": 150},   # 활주로 옆에만
     "zone_terminal": {"name": "여객 터미널", "kind": "zone", "color": "#4f86f7", "cost": 20},   # 도로 옆, 차가 손님을 내려줌
     "tower":         {"name": "관제탑",    "kind": "build", "color": "#3f6cc4", "cost": 500},
     "zone_shop":     {"name": "상업 구역",  "kind": "zone", "color": "#ec407a", "cost": 20},
     "zone_parking":  {"name": "주차 구역",  "kind": "zone", "color": "#d7dde5", "cost": 15},
 }
-BASE_ZONES = ["road", "runway", "hangar", "gate", "zone_terminal"]
+BASE_ZONES = ["road", "runway", "hangar_light", "hangar", "hangar_jumbo", "gate", "zone_terminal"]
+# 격납고 종류 → 들어갈 수 있는 가장 큰 비행기 (큰 격납고엔 작은 비행기도 들어간다)
+HANGARS = {"hangar_light": "light", "hangar": "mid", "hangar_jumbo": "jumbo"}
+PLANE_SIZE = {"light": 0, "mid": 1, "jumbo": 2}
 # 회차 클리어 보상: 1회 클리어 → 관제탑, 2회 → 상업 구역, 3회 → 주차 구역
 UNLOCK_ORDER = ["tower", "zone_shop", "zone_parking"]
 
@@ -109,7 +114,7 @@ INTRO_TEXT = (
 BOSS_LINES = [
     "팀장: 요즘 위에서 공항 얘기 많이 하더라. 잘하고 있지?",
     "팀장: 신입 때는 다 그래. 너무 무리하지 말고.",
-    "선배: 격납고 없으면 비행기 사봤자 못 세워둔다?",
+    "선배: 격납고 없으면 비행기 사봤자 못 세워둔다? 대형기는 대형 격납고에만 들어가.",
     "선배: 구역은 꼭 도로랑 붙여야 건물이 올라와.",
     "팀장: 이번 달 보고서 기대할게~",
     "선배: 활주로는 8칸 넘게 쭉 이어야 비행기가 떠.",
