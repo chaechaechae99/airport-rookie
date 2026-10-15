@@ -519,6 +519,67 @@ def _shop(level, v=0):
     return p.rows()
 
 
+PREMIUM_STYLES = [   # (지붕, 지붕 그늘, 지붕 하이라이트, 금장식, 벽, 벽 그늘) - 명품관 / 보석상 / 호텔
+    ("I", "k", "V", "Z", "k", "B"),
+    ("w", "W", "e", "Z", "w", "W"),
+    ("6", "U", "z", "3", "e", "E"),
+]
+
+
+def _premium(level, v=0):
+    """고급 상업 건물: 레벨이 오를수록 높아지고 금장식이 늘어난다"""
+    roof, roof_d, roof_h, gold, wall, wall_d = PREMIUM_STYLES[v]
+    height = [50, 62, 76][level - 1]
+    p, base = _building(height, 12, roof, roof_d, roof_h, wall, wall_d)
+    p.rect(1, 2, 30, 1, gold)                     # 지붕 금테
+    p.rect(3, 13, 26, 6, gold)                    # 금색 간판
+    p.box(3, 13, 26, 6, "k")
+    for x in range(6, 27, 4):
+        p.rect(x, 15, 2, 2, "k")
+    floors = level
+    y = 21
+    for _ in range(floors):                       # 층마다 큰 유리창 + 금색 띠
+        _glass(p, 3, y, 26, 9, 5)
+        p.rect(1, y + 9, 30, 1, gold)
+        y += 11
+    p.rect(11, y, 10, base - y, "B")              # 회전문 입구
+    p.rect(12, y + 1, 8, base - y - 1, "s")
+    p.rect(16, y + 1, 1, base - y - 1, gold)
+    p.rect(13, base, 6, 6, "r")                   # 레드카펫
+    for x in (5, 25):                             # 입구 화분
+        p.rect(x, base - 4, 3, 4, "V")
+        p.rect(x, base - 7, 3, 3, "T")
+    if level == 3:                                # 꼭대기 첨탑
+        p.rect(15, 0, 2, 3, gold)
+    return p.rows()
+
+
+def _garage(level):
+    """주차 타워: 층마다 차가 보이는 여러 층 주차 건물"""
+    height = [52, 68][level - 1]
+    p, base = _building(height, 10, "X", "Q", "v", "c", "C")
+    p.rect(11, 1, 10, 9, "u")                     # 파란 P 간판
+    p.box(11, 1, 10, 9, "k")
+    p.rect(14, 3, 1, 5, "w")
+    p.rect(14, 3, 4, 1, "w")
+    p.rect(17, 3, 1, 3, "w")
+    p.rect(14, 5, 4, 1, "w")
+    y = 12
+    colors = "ru3w5Su"
+    for floor in range(level + 1):                # 층마다 뚫린 주차층 + 차
+        p.rect(2, y, 28, 9, "A")
+        for i, x in enumerate(range(4, 28, 6)):
+            col = colors[(i + floor * 2) % len(colors)]
+            p.rect(x, y + 4, 4, 3, col)
+            p.rect(x, y + 4, 4, 1, "k")
+        p.rect(1, y + 9, 30, 2, "C")
+        y += 11
+    p.rect(10, y, 12, base - y, "k")              # 차 들어가는 입구
+    p.rect(11, y + 1, 10, base - y - 1, "A")
+    p.rect(10, y, 12, 1, "l")
+    return p.rows()
+
+
 def _gate(side):
     """탑승동: 활주로 쪽(side)으로 탑승교가 뻗어 있다"""
     tall = 16 if side == "n" else 8
@@ -740,12 +801,16 @@ SPRITES = {
     "runway_h": _runway(), "runway_h_w": _runway(end=True), "runway_h_e": _flip(_runway(end=True)),
     "plaza": _plaza(),
     "zone_terminal": _zone("u"), "zone_shop": _zone("P"), "zone_parking": _zone("w"),
+    "zone_shop_premium": _zone("Z"),
+    "zone_parking_premium": _zone("Q"),
     "parking1": _parking(1), "parking2": _parking(2),
     "tree0": _tree(0), "tree1": _tree(1),
     "construction": _construction(),
     **{f"terminal{lv}_{v}": _terminal(lv, v) for lv in (1, 2, 3) for v in range(3)},
     **{f"shop{lv}_{v}": _shop(lv, v) for lv in (1, 2, 3) for v in range(3)},
     **{f"gate_{d}": _gate(d) for d in "nsew"},
+    **{f"shop_premium{lv}_{v}": _premium(lv, v) for lv in (1, 2, 3) for v in range(3)},
+    **{f"parking_premium{lv}_{v}": _garage(lv) for lv in (1, 2) for v in range(3)},
     "hangar_light": _hangar(True, 0), "hangar_light_closed": _hangar(False, 0),
     "hangar": _hangar(True, 1), "hangar_closed": _hangar(False, 1),
     "hangar_jumbo": _hangar(True, 2), "hangar_jumbo_closed": _hangar(False, 2),

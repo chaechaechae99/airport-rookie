@@ -30,16 +30,18 @@ ZONES = {
     "tower":         {"name": "관제탑",    "kind": "build", "color": "#3f6cc4", "cost": 500},
     "zone_shop":     {"name": "상업 구역",  "kind": "zone", "color": "#ec407a", "cost": 20},
     "zone_parking":  {"name": "주차 구역",  "kind": "zone", "color": "#d7dde5", "cost": 15},
+    "zone_shop_premium": {"name": "고급 상업 구역", "kind": "zone", "color": "#ffc107", "cost": 60},
+    "zone_parking_premium": {"name": "주차 타워", "kind": "zone", "color": "#90a4ae", "cost": 50},
 }
-BASE_ZONES = ["road", "runway", "hangar_light", "hangar", "hangar_jumbo", "gate", "zone_terminal"]
+BASE_ZONES = ["road", "runway", "hangar_light", "hangar", "hangar_jumbo", "gate", "zone_terminal", "zone_shop", "zone_parking"]
 # 격납고 종류 → 들어갈 수 있는 가장 큰 비행기 (큰 격납고엔 작은 비행기도 들어간다)
 HANGARS = {"hangar_light": "light", "hangar": "mid", "hangar_jumbo": "jumbo"}
 PLANE_SIZE = {"light": 0, "mid": 1, "jumbo": 2}
-# 회차 클리어 보상: 1회 클리어 → 관제탑, 2회 → 상업 구역, 3회 → 주차 구역
-UNLOCK_ORDER = ["tower", "zone_shop", "zone_parking"]
+# 회차 클리어 보상: 1회 클리어 → 관제탑, 2회 → 고급 상업 구역, 3회 → 주차 타워
+UNLOCK_ORDER = ["tower", "zone_shop_premium", "zone_parking_premium"]
 
 # 구역 건물 성장
-MAX_LEVEL = {"terminal": 3, "shop": 3, "parking": 2}
+MAX_LEVEL = {"terminal": 3, "shop": 3, "shop_premium": 3, "parking": 2, "parking_premium": 2}
 CONSTRUCT_MONTHS = 0.2      # 빈 구역 → Lv1 공사 기간
 UPGRADE_MONTHS = 0.4        # Lv1 → Lv2 공사 기간 (Lv2 → Lv3는 2배)
 
@@ -59,6 +61,7 @@ JUMBO_RUNWAY_LEN = 12       # 대형 여객기는 12칸 이상 활주로가 필�
 PLANES_PER_GATE = 2         # 탑승동 1칸이 감당하는 비행기 수
 TERMINAL_LOAD_PER_LV = 2    # 여객 터미널 레벨 1당 감당하는 손님(load)
 SHOP_INCOME = 20            # 상점 레벨 1당 월 수익
+PREMIUM_SHOP_INCOME = 50    # 고급 상점 레벨 1당 월 수익
 TOWER_BONUS = 0.15          # 관제탑이 있으면 운항 수익 +15%
 DAY_FACTOR = 1.5            # 낮에는 운항이 많다
 NIGHT_FACTOR = 0.5          # 밤에는 운항이 적다

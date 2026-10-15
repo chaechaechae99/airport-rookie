@@ -238,7 +238,8 @@ class GameState:
     def satisfaction(self):
         crowd = max(0, self.base_load() - self.terminal_capacity()) / 2
         v = (40 + 2 * self.zone_level_sum("terminal") + 4 * self.zone_level_sum("parking")
-             + 2 * self.zone_level_sum("shop") - 6 * crowd)
+             + 8 * self.zone_level_sum("parking_premium")
+             + 2 * self.zone_level_sum("shop") + 3 * self.zone_level_sum("shop_premium") - 6 * crowd)
         return int(max(0, min(100, v)))
 
     def monthly_income(self):
@@ -247,8 +248,10 @@ class GameState:
         income *= 0.5 + self.satisfaction() / 100
         if self.count("tower") > 0:
             income *= 1 + config.TOWER_BONUS
-        shops = min(self.zone_level_sum("shop"), self.zone_level_sum("terminal") * 2)
-        return income + shops * config.SHOP_INCOME
+        room = self.zone_level_sum("terminal") * 2            # 손님 수만큼만 장사가 된다 (고급 상점 먼저)
+        premium = min(self.zone_level_sum("shop_premium"), room)
+        shops = min(self.zone_level_sum("shop"), room - premium)
+        return income + premium * config.PREMIUM_SHOP_INCOME + shops * config.SHOP_INCOME
 
     def monthly_upkeep(self):
         structures = sum(1 for row in self.grid for v in row if v in ("gate", "tower") or v in config.HANGARS)
@@ -266,7 +269,9 @@ class GameState:
         return {
             "terminal": (self.base_load() + 2 - self.terminal_capacity()) // 2,
             "shop": int(self.effective_planes() * 1.5) - self.zone_level_sum("shop"),
-            "parking": (term + 1) // 2 - self.zone_level_sum("parking"),
+            "shop_premium": self.effective_planes() - self.zone_level_sum("shop_premium"),
+            "parking": (term + 1) // 2 - self.zone_level_sum("parking") - 2 * self.zone_level_sum("parking_premium"),
+            "parking_premium": (term + 1) // 2 - self.zone_level_sum("parking") - 2 * self.zone_level_sum("parking_premium"),
         }
 
     def grow(self):

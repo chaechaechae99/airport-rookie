@@ -303,8 +303,8 @@ function renderPanel() {
     b.querySelector(".cost").textContent = pt.unlocked ? `${money(pt.price)} · 보유 ${g.fleet[pt.key]}` : `🔒 ${pt.unlock_year}년 차부터`;
   }
   // 시티즈 스카이라인식 수요 막대
-  const names = { terminal: ["터미널", "#4f86f7"], shop: ["상업", "#ec407a"], parking: ["주차", "#d7dde5"] };
-  $("demand").innerHTML = Object.entries(g.demand).map(([k, v]) => {
+  const names = { terminal: ["터미널", "#4f86f7"], shop: ["상업", "#ec407a"], shop_premium: ["고급", "#ffc107"], parking: ["주차", "#d7dde5"], parking_premium: ["타워", "#90a4ae"] };
+  $("demand").innerHTML = Object.entries(g.demand).filter(([k]) => g.tools.some(t => t.key === "zone_" + k)).map(([k, v]) => {
     const h = Math.max(0, Math.min(100, v * 25));
     return `<div><div class="bar"><i style="height:${h}%;background:${names[k][1]}"></i></div>${names[k][0]}${v > 0 ? " ▲" : ""}</div>`;
   }).join("");
@@ -312,7 +312,7 @@ function renderPanel() {
 
 const TOOL_ICON = { road: "road5", runway: "runway_h_w", hangar_light: "hangar_light", hangar: "hangar",
                     hangar_jumbo: "hangar_jumbo", gate: "gate_n", zone_terminal: "terminal2_0",
-                    zone_shop: "shop2_0", zone_parking: "parking2", tower: "tower", land: "tree0", demolish: "construction" };
+                    zone_shop: "shop2_0", zone_shop_premium: "shop_premium2_0", zone_parking: "parking2", zone_parking_premium: "parking_premium2_0", tower: "tower", land: "tree0", demolish: "construction" };
 
 function buildTools() {
   const list = [{ key: "move", name: "이동", cost: "화면 드래그" },
@@ -404,8 +404,12 @@ function refreshMapInfo() {
   const roadCount = (r, c) => DIRS.filter(([dr, dc]) => cellOf(r + dr, c + dc) === "road").length;
   mapInfo = {
     terminals: all((v, r, c) => v === "zone_terminal" && lv(r, c) > 0),
-    shops: all((v, r, c) => v === "zone_shop" && lv(r, c) > 0),
-    parkings: all((v, r, c) => v === "zone_parking" && lv(r, c) > 0 && roadNext(r, c)).map(([r, c]) => ({ r, c, road: roadNext(r, c), spots: 4 * lv(r, c) })),
+    shops: all((v, r, c) => (v === "zone_shop" || v === "zone_shop_premium") && lv(r, c) > 0),
+    parkings: all((v, r, c) => (v === "zone_parking" || v === "zone_parking_premium") && lv(r, c) > 0 && roadNext(r, c))
+      .map(([r, c]) => {
+        const garage = game.grid[r][c] === "zone_parking_premium";   // 주차 타워는 차가 건물 안으로 들어간다
+        return { r, c, road: roadNext(r, c), garage, spots: (garage ? 8 : 4) * lv(r, c) };
+      }),
     terminalRoads: all((v, r, c) => v === "zone_terminal" && lv(r, c) > 0 && roadNext(r, c)).map(([r, c]) => ({ r, c, road: roadNext(r, c) })),
     hangars: all(v => v in game.hangar_kinds).map(([r, c]) => {
       const kind = game.grid[r][c];
@@ -537,7 +541,8 @@ function moveAlong(o, dt, speedPx) {
   return o.i >= o.path.length;
 }
 
-const spotPos = (pk, i) => ({ x: pk.c * T + 4 + (i % 4) * 8, y: pk.r * T + (i < 4 ? 6 : 26) });
+const spotPos = (pk, i) => pk.garage ? { x: pk.c * T + T / 2, y: pk.r * T + T - 6 }
+                                       : { x: pk.c * T + 4 + (i % 4) * 8, y: pk.r * T + (i < 4 ? 6 : 26) };
 const doorOf = ([r, c]) => ({ x: c * T + T / 2 + rand(-6, 6), y: r * T + T - 3 });
 const nearest = (list, x, y) => list.reduce((b, p) => {
   const q = center(p[0], p[1]), d = Math.hypot(q.x - x, q.y - y);
@@ -1152,7 +1157,7 @@ function draw(now) {
                   ...fleet.filter(p => p.state !== "parked" && p.state !== "away" && p.alt < 1).map(o => ["plane", o])]
                  .sort((a, b) => a[1].y - b[1].y);
   for (const [kind, o] of ground) {
-    if (kind === "car") drawCar(o);
+    if (kind === "car") { if (!(o.state === "parked" && o.pk && o.pk.garage)) drawCar(o); }
     else if (kind === "person") drawPerson(o);
     else drawCentered(`${o.type}_${o.livery}_${o.dir}`, o.x, o.y);
   }

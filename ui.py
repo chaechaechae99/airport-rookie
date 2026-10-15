@@ -22,7 +22,8 @@ GOLD = "#ffd166"
 
 TOOL_ICON = {"road": "road5", "runway": "runway_h_w", "hangar_light": "hangar_light", "hangar": "hangar",
              "hangar_jumbo": "hangar_jumbo", "gate": "gate_n",
-             "zone_terminal": "terminal2_0", "zone_shop": "shop2_0", "zone_parking": "parking2", "tower": "tower",
+             "zone_terminal": "terminal2_0", "zone_shop": "shop2_0", "zone_shop_premium": "shop_premium2_0", "zone_parking": "parking2",
+             "zone_parking_premium": "parking_premium2_0", "tower": "tower",
              "land": "tree0", "demolish": "construction"}
 DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
@@ -330,7 +331,10 @@ class App:
         self.lbl_status.config(text=f"⚠ {hint}" if hint else "")
         d = s.demand()
         self.lbl_demand.config(text="건물 수요  " + "  ".join(
-            f"{n} {'▲' if d[k] > 0 else '-'}" for k, n in (("terminal", "터미널"), ("shop", "상업"), ("parking", "주차"))))
+            f"{n} {'▲' if d[k] > 0 else '-'}" for k, n in (("terminal", "터미널"), ("shop", "상업"),
+                                                          ("shop_premium", "고급"), ("parking", "주차"),
+                                                          ("parking_premium", "타워"))
+            if "zone_" + k in s.unlocked))
         self.lbl_rule.config(text="\n".join(f"⚠ {r['title']}: {r['desc']}" for r in s.active_rules)
                              if s.active_rules else "바뀐 규칙: 아직 없음")
         for k, rb in self.tool_buttons.items():
