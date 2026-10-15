@@ -415,6 +415,45 @@ function refreshMapInfo() {
     lights: all((v, r, c) => v === "road" && roadCount(r, c) >= 3),   // 삼거리 이상 = 신호등
   };
   mapInfo.lightSet = new Set(mapInfo.lights.map(([r, c]) => key(r, c)));
+  const road = (r, c) => cellOf(r, c) === "road";
+  const front = all((v, r, c) => v === "road" && roadCount(r, c) <= 2 &&
+    DIRS.some(([dr, dc]) => ["zone_terminal", "zone_parking"].includes(cellOf(r + dr, c + dc))))
+    .filter(([r, c]) => (road(r, c - 1) || road(r, c + 1) ? c : r) % 3 === 1);
+  // [r, c, vert(도로가 세로로 뻗음), 교차로 여부]
+  mapInfo.crosswalks = [...mapInfo.lights.map(([r, c]) => [r, c, false, true]),
+                        ...front.map(([r, c]) => [r, c, !(road(r, c - 1) || road(r, c + 1)), false])];
+  mapInfo.crossSet = new Set(mapInfo.crosswalks.map(([r, c]) => key(r, c)));
+}
+
+function walkPath(a, b) {
+  // 가는 길에 도로가 있으면 가까운 횡단보도로 돌아서 건넌다 (무단횡단 금지)
+  let crosses = false;
+  for (let t = .12; t < .9 && !crosses; t += .04) {
+    const x = a.x + (b.x - a.x) * t, y = a.y + (b.y - a.y) * t;
+    crosses = cellOf(Math.floor(y / T), Math.floor(x / T)) === "road";
+  }
+  if (!crosses || !mapInfo.crosswalks.length) return [b];
+  const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+  const [r, c, vert, inter] = mapInfo.crosswalks.reduce((best, cw) => {
+    const d = Math.hypot(cw[1] * T + T / 2 - mx, cw[0] * T + T / 2 - my);
+    return !best || d < best.d ? Object.assign([...cw], { d }) : best;
+  }, null);
+  let p1, p2;
+  if (!vert) {      // 가로 도로 → 위아래로 건넌다
+    const top = { x: c * T + T / 2, y: r * T - 2 }, bot = { x: c * T + T / 2, y: (r + 1) * T + 2 };
+    [p1, p2] = a.y < b.y ? [top, bot] : [bot, top];
+  } else {          // 세로 도로 → 좌우로 건넌다
+    const L = { x: c * T - 2, y: r * T + T / 2 }, R = { x: (c + 1) * T + 2, y: r * T + T / 2 };
+    [p1, p2] = a.x < b.x ? [L, R] : [R, L];
+  }
+  return [p1, { ...p2, cross: { r, c, vert, inter } }, b];
+}
+
+function canWalk(cross) {
+  // 교차로는 보행 신호를 지킨다 (건너는 방향의 차가 빨간불일 때만)
+  if (!cross.inter) return true;
+  const { phase, yellow } = lightState(cross.r, cross.c);
+  return !yellow && (cross.vert ? phase === 1 : phase === 0);
 }
 
 function roadPath(r, c) {
@@ -452,10 +491,16 @@ function redFor(car, p) {
 function mustWait(car, dt) {
   // 빨간불이나 앞차 때문에 멈춘다. 단, 너무 오래 막히면(엉킴 방지) 그냥 지나간다
   const p = car.path[car.i];
-  const red = p && redFor(car, p), jam = blocked(car);
+  const red = p && redFor(car, p), jam = blocked(car) || yieldTo(car, p);
   if (!red && !jam) { car.stuck = 0; return false; }
   car.stuck = (car.stuck || 0) + dt;
   return car.stuck < (red ? 7 : 3);
+}
+function yieldTo(car, p) {
+  // 다음 칸 횡단보도에 건너는 사람이 있으면 멈춘다
+  if (!p || p.r === undefined || !mapInfo.crossSet.has(key(p.r, p.c))) return false;
+  if (Math.hypot(p.x - car.x, p.y - car.y) > T * 1.1) return false;
+  return people.some(h => h.crossing && h.started && Math.floor(h.x / T) === p.c && Math.floor(h.y / T) === p.r);
 }
 function blocked(car) {
   // 바로 앞에 같은 방향으로 가는 차가 있으면 기다린다
@@ -618,7 +663,7 @@ function carLeave(car, fromRoad) {
 }
 
 function spawnPerson(x, y, tx, ty, onArrive, bag = true) {
-  people.push({ x, y, path: [{ x: tx, y: ty }], i: 0, dir: "s", walk: Math.random(), onArrive, bag,
+  people.push({ x, y, path: walkPath({ x, y }, { x: tx, y: ty }), i: 0, dir: "s", walk: Math.random(), onArrive, bag,
                 color: pick(["#ef5350", "#4f86f7", "#43b047", "#ffca28", "#ab47bc", "#ffffff", "#ff8a65"]),
                 hair: pick(["#3b2a20", "#6d4c41", "#2b2633", "#d9a441", "#a1887f"]) });
 }
@@ -675,6 +720,14 @@ function updateCars(dt) {
 
 function updatePeople(dt) {
   for (const p of people) {
+    const nxt = p.path[p.i];
+    p.crossing = !!(nxt && nxt.cross);
+    if (p.crossing && !p.started) {                       // 횡단보도 앞: 보행 신호 기다리기
+      p.waitT = (p.waitT || 0) + dt;
+      if (!canWalk(nxt.cross) && p.waitT < 12) continue;
+      p.started = true;
+    }
+    if (!p.crossing) p.started = false;
     p.walk += dt;
     if (moveAlong(p, dt, 24)) { p.done = true; if (p.onArrive) p.onArrive(); }
   }
@@ -1048,6 +1101,19 @@ function draw(now) {
     ctx.fillStyle = "#2b2633"; ctx.fillRect(c * T + 10, r * T - 4, 12, 14);
     ctx.fillStyle = "#ff6b6b"; ctx.fillRect(c * T + 11, r * T - 3, 10, 12);
     ctx.fillStyle = "#fff"; ctx.fillRect(c * T + 15, r * T - 1, 2, 5); ctx.fillRect(c * T + 15, r * T + 6, 2, 2);
+  }
+
+  // 횡단보도 (흰 줄무늬)
+  ctx.fillStyle = night() ? "#9aa3b8" : "#f4f4f4";
+  for (const [r, c, vert, inter] of mapInfo.crosswalks) {
+    const x0 = c * T, y0 = r * T;
+    if (inter) {                                          // 교차로: 네 변에
+      for (let k = 6; k < 26; k += 4) {
+        ctx.fillRect(x0 + k, y0 + 1, 2, 5); ctx.fillRect(x0 + k, y0 + T - 6, 2, 5);
+        ctx.fillRect(x0 + 1, y0 + k, 5, 2); ctx.fillRect(x0 + T - 6, y0 + k, 5, 2);
+      }
+    } else if (!vert) for (let k = 3; k < 29; k += 4) ctx.fillRect(x0 + 10, y0 + k, 12, 2);
+    else for (let k = 3; k < 29; k += 4) ctx.fillRect(x0 + k, y0 + 10, 2, 12);
   }
 
   // 신호등 (삼거리 이상)
